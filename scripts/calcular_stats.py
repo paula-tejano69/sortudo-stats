@@ -1,105 +1,121 @@
 import urllib.request
 import json
-import csv
-import io
+import time
 from collections import Counter
 from datetime import datetime
 
-LOTERIAS = {
-    "megasena":   {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/megasena/download",  "nome":"Mega-Sena",   "dezenas":6,  "min":1,"max":60},
-    "lotofacil":  {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/lotofacil/download", "nome":"Lotofacil",   "dezenas":15, "min":1,"max":25},
-    "quina":      {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/quina/download",     "nome":"Quina",       "dezenas":5,  "min":1,"max":80},
-    "lotomania":  {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/lotomania/download", "nome":"Lotomania",   "dezenas":20, "min":0,"max":99},
-    "timemania":  {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/timemania/download", "nome":"Timemania",   "dezenas":10, "min":1,"max":80},
-    "duplasena":  {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/duplasena/download", "nome":"Dupla Sena",  "dezenas":6,  "min":1,"max":50},
-    "diadesorte": {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/diadesorte/download","nome":"Dia de Sorte","dezenas":7,  "min":1,"max":31},
-    "supersete":  {"url":"https://servicebus2.caixa.gov.br/portaldeloterias/api/supersete/download", "nome":"Super Sete",  "dezenas":7,  "min":0,"max":9},
-}
+WORKER_BASE = "https://sortudo-api.gabriel-eca1908.workers.dev/api"
 
-def baixar_csv(url):
-    print(f"  Baixando: {url}")
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "*/*",
-        "Referer": "https://loterias.caixa.gov.br/"
-    }
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read().decode("latin-1")
-    except Exception as e:
-        print(f"  ERRO ao baixar: {e}")
+CONCURSOS_POR_LOTERIA = 200
+
+LOTERIAS = [
+    {"id": "megasena",   "apiId": "megasena",   "nome": "Mega-Sena",   "dezenas": 6,  "min": 1, "max": 60},
+    {"id": "lotofacil",  "apiId": "lotofacil",  "nome": "Lotofacil",   "dezenas": 15, "min": 1, "max": 25},
+    {"id": "quina",      "apiId": "quina",       "nome": "Quina",       "dezenas": 5,  "min": 1, "max": 80},
+    {"id": "lotomania",  "apiId": "lotomania",   "nome": "Lotomania",   "dezenas": 20, "min": 0, "max": 99},
+    {"id": "timemania",  "apiId": "timemania",   "nome": "Timemania",   "dezenas": 10, "min": 1, "max": 80},
+    {"id": "duplasena",  "apiId": "duplasena",   "nome": "Dupla Sena",  "dezenas": 6,  "min": 1, "max": 50},
+    {"id": "diadesorte", "apiId": "diadesorte",  "nome": "Dia de Sorte","dezenas": 7,  "min": 1, "max": 31},
+    {"id": "supersete",  "apiId": "supersete",   "nome": "Super Sete",  "dezenas": 7,  "min": 0, "max": 9},
+]
+
+def fetch_json(url, tentativas=3):
+    for tentativa in range(tentativas):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            print(f"    tentativa {tentativa+1} falhou: {e}")
+            if tentativa < tentativas - 1:
+                time.sleep(2)
+    return None
+
+def buscar_ultimo_concurso(api_id):
+    url = f"{WORKER_BASE}/{api_id}/latest"
+    data = fetch_json(url)
+    if data and data.get("concurso"):
+        return data["concurso"], data
+    return None, None
+
+def calcular_stats_loteria(loteria):
+    api_id = loteria["apiId"]
+    nome = loteria["nome"]
+
+    print(f"\nProcessando {nome}...")
+
+    ultimo_num, ultimo_data = buscar_ultimo_concurso(api_id)
+    if not ultimo_num:
+        print(f"  ERRO: nao consegui buscar o ultimo concurso")
         return None
 
-def calcular(csv_content, config):
+    print(f"  Ultimo concurso: #{ultimo_num}")
+    print(f"  Buscando os ultimos {CONCURSOS_POR_LOTERIA} concursos...")
+
     contador = Counter()
-    total = 0
-    ultimo_num = None
-    ultima_data = None
+    concursos_ok = 0
     ultimo_resultado = []
+    ultima_data_str = ""
 
-    reader = csv.reader(io.StringIO(csv_content), delimiter=";")
-    next(reader, None)
+    if ultimo_data and ultimo_data.get("dezenas"):
+        contador.update(ultimo_data["dezenas"])
+        concursos_ok += 1
+        ultimo_resultado = sorted(ultimo_data["dezenas"])
+        ultima_data_str = ultimo_data.get("data", "")
 
-    for linha in reader:
-        if not linha or not any(linha):
-            continue
-        nums = []
-        for val in linha:
-            val = val.strip().strip('"')
-            try:
-                n = int(val)
-                if config["min"] <= n <= config["max"]:
-                    nums.append(n)
-            except:
-                continue
-        if len(nums) >= config["dezenas"]:
-            dezenas = nums[:config["dezenas"]]
-            contador.update(dezenas)
-            total += 1
-            if total == 1:
-                ultimo_resultado = sorted(dezenas)
-                try:
-                    ultimo_num = int(linha[0].strip().strip('"'))
-                except:
-                    ultimo_num = total
-                try:
-                    ultima_data = linha[1].strip().strip('"')
-                except:
-                    ultima_data = ""
+    inicio = ultimo_num - 1
+    fim = max(1, ultimo_num - CONCURSOS_POR_LOTERIA + 1)
 
-    if total == 0:
+    for num in range(inicio, fim - 1, -1):
+        url = f"{WORKER_BASE}/{api_id}/{num}"
+        data = fetch_json(url)
+        if data and data.get("dezenas"):
+            contador.update(data["dezenas"])
+            concursos_ok += 1
+        if concursos_ok % 25 == 0:
+            print(f"  ... {concursos_ok}/{CONCURSOS_POR_LOTERIA} concursos processados")
+        time.sleep(0.05)
+
+    if concursos_ok == 0:
+        print(f"  ERRO: nenhum concurso processado")
         return None
 
-    todos = [n for n, _ in contador.most_common()]
-    todos_nums = list(range(config["min"], config["max"] + 1))
-    nunca = [n for n in todos_nums if n not in contador]
-    menos = [n for n, _ in reversed(contador.most_common())]
+    print(f"  OK: {concursos_ok} concursos analisados")
 
-    hot = todos[:20]
+    todos_numeros = list(range(loteria["min"], loteria["max"] + 1))
+    ordenados = [n for n, _ in contador.most_common()]
+
+    hot = ordenados[:20]
+
+    nunca = [n for n in todos_numeros if n not in contador]
+    menos = [n for n, _ in reversed(contador.most_common())]
     cold = (nunca + menos)[:15]
 
-    max_freq = contador.most_common(1)[0][1]
+    max_freq = contador.most_common(1)[0][1] if contador else 1
     freq_pct = {}
-    for n in todos_nums:
-        freq_pct[str(n)] = round(contador.get(n, 0) / max_freq * 100, 1)
+    for n in todos_numeros:
+        cnt = contador.get(n, 0)
+        freq_pct[str(n)] = round(cnt / max_freq * 100, 1)
 
-    print(f"  OK: {total} concursos | Ultimo: #{ultimo_num} em {ultima_data}")
-    print(f"  Quentes: {hot[:5]} | Frios: {cold[:5]}")
+    print(f"  Quentes: {hot[:5]}")
+    print(f"  Frios:   {cold[:5]}")
 
     return {
         "hot": hot,
         "cold": cold,
         "freqPct": freq_pct,
-        "totalConcursos": total,
+        "totalConcursos": concursos_ok,
         "ultimoConcurso": ultimo_num,
-        "ultimaData": ultima_data,
+        "ultimaData": ultima_data_str,
         "ultimoResultado": ultimo_resultado
     }
 
 def main():
     print("=" * 50)
-    print("SORTUDO - Calculando estatisticas reais")
+    print("SORTUDO - Calculando estatisticas REAIS")
     print(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print("=" * 50)
 
@@ -108,19 +124,21 @@ def main():
         "loterias": {}
     }
 
-    for lid, config in LOTERIAS.items():
-        print(f"\nProcessando {config['nome']}...")
-        csv_content = baixar_csv(config["url"])
-        if not csv_content:
-            continue
-        stats = calcular(csv_content, config)
+    for loteria in LOTERIAS:
+        stats = calcular_stats_loteria(loteria)
         if stats:
-            resultado["loterias"][lid] = stats
+            resultado["loterias"][loteria["id"]] = stats
+            print(f"  OK {loteria['nome']} salva")
+        else:
+            print(f"  FALHOU {loteria['nome']}")
 
     with open("stats.json", "w", encoding="utf-8") as f:
         json.dump(resultado, f, ensure_ascii=False, indent=2)
 
-    print(f"\nPRONTO! stats.json salvo com {len(resultado['loterias'])} loterias")
+    total = len(resultado["loterias"])
+    print(f"\n{'='*50}")
+    print(f"CONCLUIDO! {total}/8 loterias calculadas")
+    print("=" * 50)
 
 if __name__ == "__main__":
     main()
